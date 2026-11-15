@@ -1,0 +1,7 @@
+{
+  "required": false,
+  "package": "net.hugosmp.oreoverlay.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [],
+  "injectors": { "defaultRequire": 1 }
+}
