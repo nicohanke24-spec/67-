@@ -8,7 +8,6 @@ import net.minecraft.block.Blocks;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
-import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
@@ -18,17 +17,17 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * HugoOreOverlay 0.2.
+ * HugoOreOverlay 0.3.
  *
- * Scans only world/entity data currently available to the local client.
- * It does not reveal unloaded chunks, bypass anti-xray, or recover entities
- * that the server does not send to this client.
+ * Singleplayer-only seed-locked scanner. It inspects block states already
+ * loaded by the local world; it does not predict hidden/unloaded ores.
  */
 public final class HugoOreOverlayClient implements ClientModInitializer {
-    private static KeyBinding scanKey;
-    private static final int HORIZONTAL_RADIUS = 16;
-    private static final int VERTICAL_RADIUS = 12;
+    private static final long REQUIRED_SEED = -2394875239847523984L;
+    private static final int HORIZONTAL_RADIUS = 256;
+    private static final int VERTICAL_RADIUS = 16;
     private static final Map<Block, String> ORES = new LinkedHashMap<>();
+    private static KeyBinding scanKey;
 
     static {
         ORES.put(Blocks.DIAMOND_ORE, "Diamant");
@@ -68,53 +67,82 @@ public final class HugoOreOverlayClient implements ClientModInitializer {
     private static void scanNearby(MinecraftClient client) {
         if (client.world == null || client.player == null) return;
 
+        // The integrated server exposes the seed only in a local singleplayer world.
+        if (!client.isInSingleplayer() || client.getServer() == null) {
+            client.player.sendMessage(Text.literal(
+                    "§cHugoOreOverlay: Dieser Seed-Scan ist nur in Singleplayer aktiviert."
+            ), false);
+            return;
+        }
+
+        long actualSeed = client.getServer().getOverworld().getSeed();
+        if (actualSeed != REQUIRED_SEED) {
+            client.player.sendMessage(Text.literal(
+                    "§cFalscher Welt-Seed. Erwartet: §f" + REQUIRED_SEED +
+                    " §c| Aktuell: §f" + actualSeed
+            ), false);
+            return;
+        }
+
         BlockPos center = client.player.getBlockPos();
         Map<String, BlockPos> nearest = new LinkedHashMap<>();
         Map<String, Double> distances = new LinkedHashMap<>();
+        int checkedChunks = 0;
 
-        for (int dx = -HORIZONTAL_RADIUS; dx <= HORIZONTAL_RADIUS; dx++) {
-            for (int dy = -VERTICAL_RADIUS; dy <= VERTICAL_RADIUS; dy++) {
-                for (int dz = -HORIZONTAL_RADIUS; dz <= HORIZONTAL_RADIUS; dz++) {
-                    BlockPos pos = center.add(dx, dy, dz);
-                    if (!client.world.isChunkLoaded(pos)) continue;
-                    String name = ORES.get(client.world.getBlockState(pos).getBlock());
-                    if (name == null) continue;
-                    double distance = center.getSquaredDistance(pos);
-                    if (distance < distances.getOrDefault(name, Double.MAX_VALUE)) {
-                        distances.put(name, distance);
-                        nearest.put(name, pos.toImmutable());
+        int minChunkX = Math.floorDiv(center.getX() - HORIZONTAL_RADIUS, 16);
+        int maxChunkX = Math.floorDiv(center.getX() + HORIZONTAL_RADIUS, 16);
+        int minChunkZ = Math.floorDiv(center.getZ() - HORIZONTAL_RADIUS, 16);
+        int maxChunkZ = Math.floorDiv(center.getZ() + HORIZONTAL_RADIUS, 16);
+        int minY = Math.max(client.world.getBottomY(), center.getY() - VERTICAL_RADIUS);
+        int maxY = Math.min(client.world.getTopYInclusive(), center.getY() + VERTICAL_RADIUS);
+
+        for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
+            for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
+                int chunkMinX = chunkX * 16;
+                int chunkMinZ = chunkZ * 16;
+                int fromX = Math.max(center.getX() - HORIZONTAL_RADIUS, chunkMinX);
+                int toX = Math.min(center.getX() + HORIZONTAL_RADIUS, chunkMinX + 15);
+                int fromZ = Math.max(center.getZ() - HORIZONTAL_RADIUS, chunkMinZ);
+                int toZ = Math.min(center.getZ() + HORIZONTAL_RADIUS, chunkMinZ + 15);
+
+                BlockPos chunkProbe = new BlockPos(chunkMinX, center.getY(), chunkMinZ);
+                if (!client.world.isChunkLoaded(chunkProbe)) continue;
+                checkedChunks++;
+
+                for (int x = fromX; x <= toX; x++) {
+                    for (int z = fromZ; z <= toZ; z++) {
+                        for (int y = minY; y <= maxY; y++) {
+                            BlockPos pos = new BlockPos(x, y, z);
+                            String name = ORES.get(client.world.getBlockState(pos).getBlock());
+                            if (name == null) continue;
+                            double distance = center.getSquaredDistance(pos);
+                            if (distance < distances.getOrDefault(name, Double.MAX_VALUE)) {
+                                distances.put(name, distance);
+                                nearest.put(name, pos.toImmutable());
+                            }
+                        }
                     }
                 }
             }
         }
 
-        client.player.sendMessage(Text.literal("§6HugoOreOverlay 0.2 §7| Erz-Scan (" +
-                HORIZONTAL_RADIUS + " Blöcke):"), false);
+        client.player.sendMessage(Text.literal(
+                "§6HugoOreOverlay 0.3 §7| Seed bestätigt | Radius " +
+                HORIZONTAL_RADIUS + " | geladene Chunks: " + checkedChunks
+        ), false);
         if (nearest.isEmpty()) {
-            client.player.sendMessage(Text.literal("§7Keine passenden, clientseitig bekannten Erze im Scanbereich."), false);
+            client.player.sendMessage(Text.literal(
+                    "§7Keine passenden Erze in den aktuell geladenen Blöcken gefunden."
+            ), false);
         } else {
             nearest.forEach((name, pos) -> client.player.sendMessage(Text.literal(
-                    "§e" + name + " §7bei §fX " + pos.getX() + " / Y " + pos.getY() + " / Z " + pos.getZ()
+                    "§e" + name + " §7bei §fX " + pos.getX() + " / Y " +
+                    pos.getY() + " / Z " + pos.getZ()
             ), false));
         }
-
-        // This lists only other player entities currently tracked by the client.
-        // No attempt is made to infer hidden, untracked, or server-suppressed players.
-        int playerCount = 0;
-        client.player.sendMessage(Text.literal("§bSpieler in den empfangenen Entity-Daten:"), false);
-        for (PlayerEntity other : client.world.getPlayers()) {
-            if (other == client.player || !other.isAlive()) continue;
-            double distance = client.player.distanceTo(other);
-            if (distance > 128.0) continue;
-            playerCount++;
-            BlockPos p = other.getBlockPos();
-            client.player.sendMessage(Text.literal("§b" + other.getName().getString() +
-                    " §7– " + Math.round(distance) + "m §8(X " + p.getX() +
-                    ", Y " + p.getY() + ", Z " + p.getZ() + ")"), false);
-        }
-        if (playerCount == 0) {
-            client.player.sendMessage(Text.literal("§7Keine anderen Spieler in den aktuell empfangenen Entity-Daten."), false);
-        }
-        client.player.sendMessage(Text.literal("§8Hinweis: Nur geladene Blockdaten und vom Server übermittelte Spieler. Kein Seed-Reverse-Engineering oder Anti-Xray-/Unsichtbarkeits-Bypass."), false);
+        client.player.sendMessage(Text.literal(
+                "§8Hinweis: Seed wird geprüft; gefunden werden nur bereits geladene Blockdaten. " +
+                "Nicht geladene/verdeckte Erze werden nicht vorausgesagt."
+        ), false);
     }
 }
