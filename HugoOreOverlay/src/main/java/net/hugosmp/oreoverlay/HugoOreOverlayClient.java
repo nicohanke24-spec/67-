@@ -19,8 +19,10 @@ import java.util.Map;
 /**
  * HugoOreOverlay 0.3.
  *
- * Singleplayer-only seed-locked scanner. It inspects block states already
- * loaded by the local world; it does not predict hidden/unloaded ores.
+ * Scans block states currently loaded by the client. In singleplayer the
+ * configured seed is verified against the integrated server. In multiplayer
+ * the client cannot verify the remote server seed, so scanning is allowed
+ * without that check. No unloaded chunks are predicted.
  */
 public final class HugoOreOverlayClient implements ClientModInitializer {
     private static final long REQUIRED_SEED = -2394875239847523984L;
@@ -67,21 +69,16 @@ public final class HugoOreOverlayClient implements ClientModInitializer {
     private static void scanNearby(MinecraftClient client) {
         if (client.world == null || client.player == null) return;
 
-        // The integrated server exposes the seed only in a local singleplayer world.
-        if (!client.isInSingleplayer() || client.getServer() == null) {
-            client.player.sendMessage(Text.literal(
-                    "§cHugoOreOverlay: Dieser Seed-Scan ist nur in Singleplayer aktiviert."
-            ), false);
-            return;
-        }
-
-        long actualSeed = client.getServer().getOverworld().getSeed();
-        if (actualSeed != REQUIRED_SEED) {
-            client.player.sendMessage(Text.literal(
-                    "§cFalscher Welt-Seed. Erwartet: §f" + REQUIRED_SEED +
-                    " §c| Aktuell: §f" + actualSeed
-            ), false);
-            return;
+        boolean singleplayer = client.isInSingleplayer() && client.getServer() != null;
+        if (singleplayer) {
+            long actualSeed = client.getServer().getOverworld().getSeed();
+            if (actualSeed != REQUIRED_SEED) {
+                client.player.sendMessage(Text.literal(
+                        "§cFalscher Welt-Seed. Erwartet: §f" + REQUIRED_SEED +
+                        " §c| Aktuell: §f" + actualSeed
+                ), false);
+                return;
+            }
         }
 
         BlockPos center = client.player.getBlockPos();
@@ -126,8 +123,11 @@ public final class HugoOreOverlayClient implements ClientModInitializer {
             }
         }
 
+        String seedStatus = singleplayer
+                ? "Seed bestätigt"
+                : "Multiplayer: Seed serverseitig nicht prüfbar";
         client.player.sendMessage(Text.literal(
-                "§6HugoOreOverlay 0.3 §7| Seed bestätigt | Radius " +
+                "§6HugoOreOverlay 0.3 §7| " + seedStatus + " | Radius " +
                 HORIZONTAL_RADIUS + " | geladene Chunks: " + checkedChunks
         ), false);
         if (nearest.isEmpty()) {
@@ -141,8 +141,8 @@ public final class HugoOreOverlayClient implements ClientModInitializer {
             ), false));
         }
         client.player.sendMessage(Text.literal(
-                "§8Hinweis: Seed wird geprüft; gefunden werden nur bereits geladene Blockdaten. " +
-                "Nicht geladene/verdeckte Erze werden nicht vorausgesagt."
+                "§8Hinweis: Es werden nur vom Client geladene Blockdaten gescannt. " +
+                "Nicht geladene oder vom Server maskierte Erze werden nicht vorausgesagt."
         ), false);
     }
 }
